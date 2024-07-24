@@ -2,28 +2,18 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class Inventory extends Model
 {
-    use HasFactory;
+    // Specify the table name if it is not the plural form of the model name
+    protected $table = 'inventory';
 
-    /**
-     * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
-     */
+    // Specify which attributes are mass assignable
     protected $fillable = [
         'product_name',
         'description',
         'stock_level',
         'price',
     ];
-
-    // Define relationships
-    public function transactions()
-    {
-        return $this->hasMany(Transaction::class);
-    }
 }

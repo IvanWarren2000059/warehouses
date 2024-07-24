@@ -17,9 +17,12 @@ class Transaction extends Model
     protected $fillable = [
         'user_id',
         'inventory_id',
+        'transaction_type',
+        'in_value',
+        'out_value',
         'status',
         'order_date',
-        'delivery_date',
+        'transaction_date',
     ];
 
     // Define relationships
