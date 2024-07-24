@@ -8,6 +8,8 @@ use App\Models\Transaction;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Carbon\Carbon; 
 
 class SupplyChainController extends Controller
 {
@@ -58,31 +60,56 @@ class SupplyChainController extends Controller
     
         return response()->json(['message' => 'Product added successfully', 'inventory' => $inventory], 201);
     }
+
+
+public function getInventoryItem($id)
+{
+    // Fetch the inventory item by its ID
+    $inventory = Inventory::findOrFail($id);
+    
+    return response()->json($inventory);
+}
+
+
     
 
-    public function updateInventory(Request $request, $id)
+    public function updateInventoryItem(Request $request, $id)
     {
-        if (Auth::user()->user_type !== 'warehouse_manager') {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
-
         $inventory = Inventory::findOrFail($id);
-        $inventory->update($request->all());
-
-        // Update transaction for stock level change
-        Transaction::where('inventory_id', $id)->update([
-            'in_value' => $inventory->stock_level,
-            'transaction_date' => now(),
-        ]);
-
-        return response()->json(['message' => 'Product updated successfully', 'inventory' => $inventory], 200);
+    
+        // Update inventory item details
+        $inventory->product_name = $request->product_name;
+        $inventory->description = $request->description;
+        $inventory->price = $request->price; // Update price
+    
+        $transaction = new Transaction();
+        $transaction->user_id = $request->user_id;
+        $transaction->inventory_id = $inventory->id;
+        $transaction->transaction_type = 'inventory_management';
+        $transaction->status = 'delivered';
+        $transaction->order_date = now();
+    
+        if ($request->filled('in_value')) {
+            $inventory->stock_level += $request->in_value;
+            $transaction->in_value = $request->in_value;
+        }
+    
+        if ($request->filled('out_value')) {
+            $inventory->stock_level -= $request->out_value;
+            $transaction->out_value = $request->out_value;
+        }
+    
+        $inventory->save();
+        $transaction->save();
+    
+        return response()->json(['message' => 'Inventory item updated successfully', 'inventory' => $inventory], 200);
     }
+    
+    
 
     public function deleteInventory($id)
     {
-        if (Auth::user()->user_type !== 'warehouse_manager') {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
+       
 
         $inventory = Inventory::findOrFail($id);
         $inventory->delete();
@@ -106,10 +133,6 @@ class SupplyChainController extends Controller
 
     public function createOrder(Request $request)
     {
-        if (Auth::user()->user_type !== 'warehouse_manager') {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
-
         $validator = Validator::make($request->all(), [
             'inventory_id' => 'required|exists:inventory,id',
             'out_value' => 'required|integer',
@@ -121,10 +144,12 @@ class SupplyChainController extends Controller
         }
 
         $order = Transaction::create([
-            'user_id' => Auth::id(),
+            'user_id' => $request->user_id,
             'inventory_id' => $request->inventory_id,
             'transaction_type' => 'delivery',
+            'status' => 'pending',
             'out_value' => $request->out_value,
+            'transaction_date' => now(),
             'order_date' => $request->order_date,
         ]);
 
@@ -134,7 +159,7 @@ class SupplyChainController extends Controller
     public function updateOrder(Request $request, $id)
     {
         $validator = Validator::make($request->all(), [
-            'status' => 'required|string|in:pending,en_route,delivered',
+            'status' => 'required|string|in:pending,en-route,delivered',
         ]);
     
         if ($validator->fails()) {
@@ -174,19 +199,56 @@ class SupplyChainController extends Controller
     
     
 
-    // Delivery Tracking for Delivery Driver
-    public function getDriverDeliveries()
+    public function getDriverDeliveries(Request $request)
     {
-        if (Auth::user()->user_type !== 'delivery_driver') {
-            return response()->json(['error' => 'Unauthorized'], 403);
+        // Validate the user_id
+        $validator = Validator::make($request->all(), [
+            'user_id' => 'required|integer',
+        ]);
+    
+        if ($validator->fails()) {
+            return response()->json(['error' => 'Invalid user ID'], 400);
         }
-
-        $deliveries = Transaction::where('user_id', Auth::id())
-                                 ->where('transaction_type', 'delivery')
-                                 ->where('status', '!=', 'delivered')
+    
+        // Fetch deliveries based on the provided user_id
+        $deliveries = Transaction::join('inventory', 'transactions.inventory_id', '=', 'inventory.id')
+                                 ->where('transactions.user_id', $request->user_id)
+                                 ->where('transactions.transaction_type', 'delivery')
+                                 ->where('transactions.status', '!=', 'delivered')
+                                 ->select('transactions.*', 'inventory.product_name')
                                  ->get();
+    
         return response()->json($deliveries);
     }
+    
+
+    public function updateOrderDriver(Request $request, $id)
+    {
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|string|in:pending,en-route,delivered',
+        ]);
+    
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 400);
+        }
+    
+        $order = Transaction::findOrFail($id);
+        
+        // Check if the status is updated to 'delivered'
+        if ($order->status !== 'delivered' && $request->status === 'delivered') {
+            // Update the inventory's stock_level based on the in_value of the transaction
+            $inventory = Inventory::findOrFail($order->inventory_id);
+            $inventory->stock_level -= $order->out_value;
+            $inventory->save();
+        }
+    
+        // Update the transaction with the new status and any other changes
+        $order->update($request->all());
+    
+        return response()->json(['message' => 'Order updated successfully', 'order' => $order], 200);
+    }
+    
+    
 
     // Get All Deliveries (Differentiated by Type)
     public function getAllDeliveries()
@@ -262,23 +324,7 @@ class SupplyChainController extends Controller
     }
     
     
-    // Notifications System (Mock-up, not a complete implementation)
-    public function lowStockAlert()
-    {
-        if (Auth::user()->user_type !== 'warehouse_manager') {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
-
-        $lowStockItems = Inventory::where('stock_level', '<', 10)->get(); // Assuming threshold is 10
-        if ($lowStockItems->isEmpty()) {
-            return response()->json(['message' => 'All stock levels are sufficient'], 200);
-        }
-
-        // Here you could send notifications to the warehouse manager
-        return response()->json(['message' => 'Low stock alert', 'items' => $lowStockItems], 200);
-    }
-
-
+   
     public function getUsersForDropdown()
 {
 
@@ -290,5 +336,139 @@ class SupplyChainController extends Controller
         'delivery_drivers' => $deliveryDrivers,
     ]);
 }
+
+public function getDeliveries()
+{
+    $deliveries = DB::table('transactions')
+        ->join('users', 'transactions.user_id', '=', 'users.id')
+        ->join('inventory', 'transactions.inventory_id', '=', 'inventory.id')
+        ->select('transactions.id', 'inventory.product_name', 'transactions.status', 'transactions.out_value', 'users.name as deliverer_name')
+        ->where('transactions.transaction_type', 'delivery') // Assuming 'type' distinguishes between transaction types
+        ->get();
+
+    return response()->json($deliveries);
+}
+
+public function updateDeliveryStatusManager($id, Request $request)
+{
+    $status = $request->input('status');
+
+    // Validate status
+    if (!in_array($status, ['pending', 'en-route', 'delivered'])) {
+        return response()->json(['error' => 'Invalid status'], 400);
+    }
+
+    $updated = \DB::table('transactions')
+        ->where('id', $id)
+        ->update(['status' => $status]);
+
+    if ($updated) {
+        return response()->json(['message' => 'Delivery status updated successfully']);
+    } else {
+        return response()->json(['error' => 'Failed to update status'], 500);
+    }
+}
+
+
+
+
+public function lowStockAlert()
+{
+    $lowStockItems = Inventory::where('stock_level', '<', 10)->get(); // Threshold set to 10
+
+    if ($lowStockItems->isEmpty()) {
+        return response()->json([
+            'message' => 'All stock levels are sufficient',
+            'items' => [] // Return an empty array for consistency
+        ], 200);
+    }
+
+    return response()->json([
+        'message' => 'Low stock alert',
+        'items' => $lowStockItems->toArray() // Convert to array
+    ], 200);
+}
+
+
+
+public function orderNotifications()
+{
+    
+    $yesterday = Carbon::now()->subHours(24);
+
+    $orders = DB::table('transactions')
+        ->join('users', 'transactions.user_id', '=', 'users.id')
+        ->join('inventory', 'transactions.inventory_id', '=', 'inventory.id')
+        ->select(
+            'transactions.id',
+            'inventory.product_name',
+            'transactions.status',
+            'transactions.out_value',
+            'users.name as deliverer_name',
+            'transactions.created_at'
+        )
+        ->whereIn('transactions.status', ['pending', 'en-route'])
+        ->where('transactions.transaction_date', '>=', $yesterday)
+        ->get();
+
+    if ($orders->isEmpty()) {
+        return response()->json(['message' => 'No recent orders pending or en-route'], 200);
+    }
+
+    return response()->json([
+        'message' => 'Order notifications',
+        'orders' => $orders
+    ], 200);
+}
+
+
+public function updateUser(Request $request, $id)
+{
+    $user = User::find($id);
+    
+    if (!$user) {
+        return response()->json(['message' => 'User not found'], 404);
+    }
+
+    $validated = $request->validate([
+        'name' => 'required|string|max:255',
+        'email' => 'required|email|max:255',
+        'user_type' => 'required|string',
+    ]);
+
+    $user->update($validated);
+    
+    return response()->json(['message' => 'User updated successfully']);
+}
+
+public function getUsers()
+{
+    $users = User::where('user_type', '!=', 'system_administrator')->get();
+    return response()->json($users);
+}
+
+public function show($id)
+{
+    $user = User::find($id);
+
+    if (!$user) {
+        return response()->json(['message' => 'User not found'], 404);
+    }
+
+    return response()->json($user);
+}
+
+public function destroy($id)
+{
+    $user = User::find($id);
+
+    if (!$user) {
+        return response()->json(['message' => 'User not found'], 404);
+    }
+
+    $user->delete();
+    return response()->json(['message' => 'User deleted successfully']);
+}
+
 
 }
